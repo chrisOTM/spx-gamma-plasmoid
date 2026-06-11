@@ -57,6 +57,8 @@ def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="SPX dealer gamma fetcher (JSON out).")
     ap.add_argument("--max-dte", type=int, default=90,
                     help="only include expiries up to X days (default: 90)")
+    ap.add_argument("--spot-only", action="store_true",
+                    help="emit only the SPX spot price; skip GEX/flip computation")
     ap.add_argument("--min-oi", type=float, default=0)
     ap.add_argument("--rate", type=float, default=0.045)
     ap.add_argument("--div", type=float, default=0.013)
@@ -80,6 +82,24 @@ def main() -> int:
             raw = fetch_cboe_chain(timeout=args.timeout)
     except Exception as exc:
         emit(error_result(f"Could not load option chain: {exc}"))
+        return 0
+
+    # 2a) spot-only: SPX moves intraday, but OI (-> GEX/flip) is EOD. Skip the
+    # heavy gamma computation and emit just the price for interval refreshes.
+    if args.spot_only:
+        try:
+            _df, spot = parse_chain(raw, spot_override=args.spot)
+        except Exception as exc:
+            emit(error_result(f"Could not parse option chain: {exc}"))
+            return 0
+        emit({
+            "status": "ok",
+            "mode": "spot",
+            "timestamp": now_iso(),
+            "source": "CBOE delayed quotes",
+            "spot": round(float(spot), 2),
+            "errors": [],
+        })
         return 0
 
     # 2) parse + filter

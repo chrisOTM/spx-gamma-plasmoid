@@ -31,6 +31,8 @@ PlasmoidItem {
     // Daily EOD refresh time (US Eastern). OI updates once per day -> one fetch/day.
     property int    eodRefreshHourEt:   plasmoid.configuration.eodRefreshHourEt
     property int    eodRefreshMinuteEt: plasmoid.configuration.eodRefreshMinuteEt
+    // Intraday SPX-only refresh cadence (minutes). GEX/flip stay EOD-fixed.
+    property int    spotRefreshIntervalMinutes: Math.max(1, plasmoid.configuration.spotRefreshIntervalMinutes)
     // ET date-key (YYYY-M-D) of the last completed daily fetch; guards re-fetch.
     property string lastEodFetchDate:   ""
     readonly property string eodRefreshLabel:
@@ -294,6 +296,16 @@ PlasmoidItem {
         onTriggered: root.maybeEodRefresh()
     }
 
+    // Intraday SPX price poll. Fetches spot only (not GEX/flip), gated on US
+    // market hours so off-hours/weekends don't fire wasted requests.
+    Timer {
+        id: spotTimer
+        interval: root.spotRefreshIntervalMinutes * 60 * 1000
+        repeat: true
+        running: root.visible
+        onTriggered: root.maybeSpotRefresh()
+    }
+
     Timer {
         id: fetchTimeout
         interval: 30000
@@ -314,6 +326,11 @@ PlasmoidItem {
         function onEodRefreshMinuteEtChanged() {
             root.eodRefreshMinuteEt = plasmoid.configuration.eodRefreshMinuteEt
         }
+        function onSpotRefreshIntervalMinutesChanged() {
+            root.spotRefreshIntervalMinutes = Math.max(1, plasmoid.configuration.spotRefreshIntervalMinutes)
+            spotTimer.interval = root.spotRefreshIntervalMinutes * 60 * 1000
+            spotTimer.restart()
+        }
         function onMaxDteChanged() {
             root.fetchData()
         }
@@ -329,6 +346,7 @@ PlasmoidItem {
             root.lastEodFetchDate = root.etDateKey(et)
         }
         refreshTimer.start()
+        spotTimer.start()
     }
 
     onExpandedChanged: {
@@ -360,6 +378,20 @@ PlasmoidItem {
         var targetMin = root.eodRefreshHourEt * 60 + root.eodRefreshMinuteEt
         return nowMin >= targetMin
     }
+    // US regular session 09:30–16:00 ET. etNow() is DST-safe and independent of
+    // the machine's local timezone (reparses via America/New_York), so this is
+    // correct whether the user is on CET, UTC, etc.
+    function isEtMarketHours(et) {
+        var m = et.getHours() * 60 + et.getMinutes()
+        return m >= (9 * 60 + 30) && m <= (16 * 60)
+    }
+    // Intraday: refresh SPX price only, during market hours on weekdays.
+    function maybeSpotRefresh() {
+        var et = root.etNow()
+        if (root.isEtWeekend(et)) return
+        if (!root.isEtMarketHours(et)) return
+        root.fetchSpot()
+    }
     // Fire one fetch per weekday once we're past the configured ET time.
     function maybeEodRefresh() {
         var et = root.etNow()
@@ -389,6 +421,24 @@ PlasmoidItem {
         fetchTimeout.start()
     }
 
+    // Lightweight intraday refresh: SPX spot only. Shares isRefreshing so it
+    // won't collide with a full fetch in flight. Doesn't blank the panel.
+    function fetchSpot() {
+        if (root.isRefreshing) {
+            return
+        }
+        root.isRefreshing = true
+        fetchTimeout.stop()
+
+        var scriptUrl = Qt.resolvedUrl("../code/fetch_gamma.py")
+        var script    = scriptUrl.toString().replace(/^file:\/\//, "")
+        var command   = "python3 " + quoteShell(script)
+                      + " --spot-only"
+                      + " --timeout 12"
+        executable.connectSource(command)
+        fetchTimeout.start()
+    }
+
     function handleFetcherOutput(stdout, stderr, exitCode) {
         root.isRefreshing = false
         fetchTimeout.stop()
@@ -403,6 +453,23 @@ PlasmoidItem {
 
         try {
             var result = JSON.parse(stdout)
+
+            // Intraday spot-only response: update SPX price only. GammaFlip
+            // level stays EOD-fixed; recompute the live distance to spot.
+            if (result.status === "ok" && result.mode === "spot") {
+                if (result.spot !== null && result.spot !== undefined) {
+                    root.spot    = result.spot
+                    root.hasData = true
+                    if (!isNaN(root.flip)) {
+                        root.flipDistance    = root.flip - root.spot
+                        root.flipDistancePct = (root.flip / root.spot - 1.0) * 100.0
+                    }
+                    root.lastUpdate           = result.timestamp || ""
+                    root.lastSuccessfulUpdate = root.lastUpdate
+                    root.status               = "ok"
+                }
+                return   // do NOT touch netGex / regime / flip
+            }
 
             if (result.status === "ok" || result.status === "partial") {
                 root.spot            = (result.spot !== null && result.spot !== undefined) ? result.spot : NaN

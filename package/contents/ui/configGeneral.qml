@@ -8,6 +8,7 @@ Kirigami.FormLayout {
 
     property alias cfg_eodRefreshHourEt: eodHour.value
     property alias cfg_eodRefreshMinuteEt: eodMinute.value
+    property alias cfg_spotRefreshIntervalMinutes: spotInterval.value
     property int   cfg_compactMode: 0
     property alias cfg_maxDte: maxDte.value
 
@@ -36,6 +37,21 @@ Kirigami.FormLayout {
             text: i18n("ET")
             color: Kirigami.Theme.disabledTextColor
         }
+    }
+
+    // SPX spot moves intraday — refresh just the price (not GEX/flip) every N
+    // minutes, but only during US regular trading hours.
+    QQC2.SpinBox {
+        id: spotInterval
+        Kirigami.FormData.label: i18n("Intraday SPX price refresh (minutes):")
+        from: 1
+        to: 240
+        value: 15
+    }
+    QQC2.Label {
+        text: i18n("Polls only during US market hours (09:30–16:00 ET).")
+        font: Kirigami.Theme.smallFont
+        color: Kirigami.Theme.disabledTextColor
     }
 
     QQC2.ComboBox {

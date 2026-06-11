@@ -18,6 +18,13 @@
       <min>0</min>
       <max>59</max>
     </entry>
+    <!-- SPX spot moves intraday; poll only it (not GEX/flip) every N minutes
+         during US market hours. -->
+    <entry name="spotRefreshIntervalMinutes" type="Int">
+      <default>15</default>
+      <min>1</min>
+      <max>240</max>
+    </entry>
     <!-- 0 = Price + regime color, 1 = Net GEX, 2 = Regime glyph -->
     <entry name="compactMode" type="Int">
       <default>0</default>
