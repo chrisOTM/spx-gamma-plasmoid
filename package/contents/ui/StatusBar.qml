@@ -9,7 +9,7 @@ RowLayout {
     property string status: "loading"
     property string lastSuccessfulUpdate: ""
     property string regime: ""
-    property int refreshIntervalMinutes: 15
+    property string refreshLabel: ""
 
     spacing: Kirigami.Units.smallSpacing * 2
 
@@ -69,6 +69,7 @@ RowLayout {
     PlasmaComponents3.Label {
         font.pointSize: Kirigami.Theme.smallFont.pointSize
         color: Kirigami.Theme.disabledTextColor
-        text: i18n("%1 min", statusBar.refreshIntervalMinutes)
+        text: statusBar.refreshLabel
+        visible: statusBar.refreshLabel.length > 0
     }
 }

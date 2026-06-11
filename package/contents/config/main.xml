@@ -5,9 +5,18 @@
       http://www.kde.org/standards/kcfg/1.0/kcfg.xsd">
   <kcfgfile name=""/>
   <group name="General">
-    <entry name="refreshIntervalMinutes" type="Int">
-      <default>15</default>
-      <min>1</min>
+    <!-- Daily refresh time in US Eastern (market close 16:00 ET; +buffer
+         so the CBOE EOD snapshot is settled). OI is published once per day,
+         so an interval poll is pointless. -->
+    <entry name="eodRefreshHourEt" type="Int">
+      <default>16</default>
+      <min>0</min>
+      <max>23</max>
+    </entry>
+    <entry name="eodRefreshMinuteEt" type="Int">
+      <default>30</default>
+      <min>0</min>
+      <max>59</max>
     </entry>
     <!-- 0 = Price + regime color, 1 = Net GEX, 2 = Regime glyph -->
     <entry name="compactMode" type="Int">

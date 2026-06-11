@@ -28,7 +28,14 @@ PlasmoidItem {
     property string lastUpdate:           ""
     property string lastSuccessfulUpdate: ""
     property bool   isRefreshing:    false
-    property int    refreshIntervalMinutes: Math.max(1, plasmoid.configuration.refreshIntervalMinutes)
+    // Daily EOD refresh time (US Eastern). OI updates once per day -> one fetch/day.
+    property int    eodRefreshHourEt:   plasmoid.configuration.eodRefreshHourEt
+    property int    eodRefreshMinuteEt: plasmoid.configuration.eodRefreshMinuteEt
+    // ET date-key (YYYY-M-D) of the last completed daily fetch; guards re-fetch.
+    property string lastEodFetchDate:   ""
+    readonly property string eodRefreshLabel:
+        (root.eodRefreshHourEt < 10 ? "0" : "") + root.eodRefreshHourEt + ":"
+        + (root.eodRefreshMinuteEt < 10 ? "0" : "") + root.eodRefreshMinuteEt + " ET"
 
     // ── Helpers ──────────────────────────────────────────────────────────────
     readonly property color regimeColor: {
@@ -255,7 +262,7 @@ PlasmoidItem {
                 status: root.status
                 lastSuccessfulUpdate: root.lastSuccessfulUpdate
                 regime: root.regime
-                refreshIntervalMinutes: root.refreshIntervalMinutes
+                refreshLabel: root.eodRefreshLabel
             }
         }
     }
@@ -276,12 +283,15 @@ PlasmoidItem {
     }
 
     // ── Timers ───────────────────────────────────────────────────────────────
+    // Data is EOD (Open Interest publishes once/day), so instead of polling we
+    // tick once a minute and fire a single fetch once per weekday after the
+    // configured ET refresh time. DST-safe: ET wall-clock is read each tick.
     Timer {
         id: refreshTimer
-        interval: root.refreshIntervalMinutes * 60 * 1000
+        interval: 60 * 1000
         repeat: true
         running: root.visible
-        onTriggered: fetchData()
+        onTriggered: root.maybeEodRefresh()
     }
 
     Timer {
@@ -298,10 +308,11 @@ PlasmoidItem {
     // ── Config reactivity ────────────────────────────────────────────────────
     Connections {
         target: plasmoid.configuration
-        function onRefreshIntervalMinutesChanged() {
-            root.refreshIntervalMinutes = Math.max(1, plasmoid.configuration.refreshIntervalMinutes)
-            refreshTimer.interval = root.refreshIntervalMinutes * 60 * 1000
-            refreshTimer.restart()
+        function onEodRefreshHourEtChanged() {
+            root.eodRefreshHourEt = plasmoid.configuration.eodRefreshHourEt
+        }
+        function onEodRefreshMinuteEtChanged() {
+            root.eodRefreshMinuteEt = plasmoid.configuration.eodRefreshMinuteEt
         }
         function onMaxDteChanged() {
             root.fetchData()
@@ -310,8 +321,13 @@ PlasmoidItem {
 
     // ── Lifecycle ────────────────────────────────────────────────────────────
     Component.onCompleted: {
-        root.refreshIntervalMinutes = Math.max(1, plasmoid.configuration.refreshIntervalMinutes)
         fetchData()
+        // If we start up after today's refresh time, mark today done so the
+        // ticker doesn't immediately fire a duplicate fetch.
+        var et = root.etNow()
+        if (root.etMinutesPastRefresh(et) && !root.isEtWeekend(et)) {
+            root.lastEodFetchDate = root.etDateKey(et)
+        }
         refreshTimer.start()
     }
 
@@ -324,6 +340,35 @@ PlasmoidItem {
     // ── Functions ────────────────────────────────────────────────────────────
     function quoteShell(value) {
         return "'" + String(value).replace(/'/g, "'\\''") + "'"
+    }
+
+    // ── EOD scheduling helpers (US Eastern, DST-safe) ────────────────────────
+    // Date whose local getters reflect ET wall-clock (reparse of the ET-localized
+    // string). Good enough for hour/minute/day-of-week comparisons.
+    function etNow() {
+        return new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }))
+    }
+    function etDateKey(et) {
+        return et.getFullYear() + "-" + (et.getMonth() + 1) + "-" + et.getDate()
+    }
+    function isEtWeekend(et) {
+        var d = et.getDay()   // 0 = Sun, 6 = Sat — no new EOD data
+        return d === 0 || d === 6
+    }
+    function etMinutesPastRefresh(et) {
+        var nowMin    = et.getHours() * 60 + et.getMinutes()
+        var targetMin = root.eodRefreshHourEt * 60 + root.eodRefreshMinuteEt
+        return nowMin >= targetMin
+    }
+    // Fire one fetch per weekday once we're past the configured ET time.
+    function maybeEodRefresh() {
+        var et = root.etNow()
+        if (root.isEtWeekend(et)) return
+        var key = root.etDateKey(et)
+        if (root.lastEodFetchDate === key) return
+        if (!root.etMinutesPastRefresh(et)) return
+        root.lastEodFetchDate = key
+        fetchData()
     }
 
     function fetchData() {

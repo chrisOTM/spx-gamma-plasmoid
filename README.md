@@ -67,7 +67,9 @@ bash scripts/uninstall.sh
 
 ## Settings
 
-- **Refresh interval** (minutes, default 15)
+- **Daily EOD refresh** (US Eastern time, default 16:30 ET) — one fetch per
+  weekday after the close, since Open Interest only updates once a day. Use the
+  refresh button or expand the widget to pull on demand.
 - **Panel display** (the three compact modes above)
 - **Max days to expiry** (default 90) — caps which option expiries feed the GEX
 

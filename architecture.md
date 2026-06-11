@@ -7,7 +7,7 @@ main.qml
   Plasma5Support.DataSource ──exec──►  fetch_gamma.py
   (engine: "executable")                 │ argparse: --max-dte --timeout ...
                                           │ guarded imports (numpy/scipy/...)
-  Timer (refresh, default 15 min)         ▼
+  Timer (1-min tick → daily EOD fetch)    ▼
   fetchTimeout (30 s)                  spx_gamma.py  (engine, reused as library)
                                           fetch_cboe_chain() ─► CBOE delayed JSON
   onNewData(stdout) ◄──one JSON line──    parse_chain()      ─► DataFrame + spot
@@ -37,9 +37,9 @@ status. Stale data stays on screen during refresh/error (`hasData` /
   as a module.
 - `package/contents/ui/main.qml` — widget: state, both representations, data
   source, timers, JSON parsing.
-- `package/contents/ui/StatusBar.qml` — status / last update / interval line.
+- `package/contents/ui/StatusBar.qml` — status / last update / EOD refresh time line.
 - `package/contents/ui/configGeneral.qml` + `config/main.xml` + `config.qml` —
-  settings: refresh interval, panel display mode, max DTE.
+  settings: daily EOD refresh time (ET), panel display mode, max DTE.
 
 ## Data source
 
