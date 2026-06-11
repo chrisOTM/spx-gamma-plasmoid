@@ -11,16 +11,25 @@ The gamma math is the engine in `package/contents/code/spx_gamma.py`
 (SqueezeMetrics-style naive GEX, Black-Scholes gamma, zero-crossing flip).
 `fetch_gamma.py` wraps it and prints one JSON line for the QML side.
 
-<img width="432" height="330" alt="image" src="https://github.com/user-attachments/assets/685f11ec-388d-4662-93b4-3e2836beac26" />
+## Screenshots
+
+In a panel:
+
+<img width="432" height="330" alt="SPX Dealer Gamma in a Plasma panel" src="https://github.com/user-attachments/assets/685f11ec-388d-4662-93b4-3e2836beac26" />
+
+Expanded view — all numbers plus status bar:
+
+![Expanded view](docs/full-view.png)
 
 ## Panel display modes
 
-Switchable in the widget settings (**Panel display**):
+Switchable in the widget settings (**Panel display**). Colour follows the gamma
+regime: green = positive (vol-dampening), red = negative (vol-amplifying).
 
-1. **SPX price + regime color** — spot price tinted green (positive gamma) /
-   red (negative gamma), flip distance as subtext
-2. **Net GEX value** — net GEX colored by sign, spot price below
-3. **Regime glyph + price** — ▲ / ▼ glyph for the regime, spot below
+| 1. SPX price + regime color | 2. Net GEX value | 3. Regime glyph + price |
+|:---:|:---:|:---:|
+| ![Price + regime](docs/compact_0.png) | ![Net GEX](docs/compact_1.png) | ![Regime glyph](docs/compact_2.png) |
+| spot price tinted by regime, flip distance below | net GEX colored by sign, spot below | ▲ / ▼ glyph for the regime, spot below |
 
 The expanded view shows all numbers: SPX, Net GEX + regime, gamma flip and Δ to
 spot, plus a status bar.

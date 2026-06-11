@@ -1,5 +1,6 @@
 __pycache__/
 *.pyc
 *.png
+!docs/*.png
 chain.json
 spx_gex_per_strike.csv
