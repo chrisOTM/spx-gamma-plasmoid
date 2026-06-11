@@ -11,6 +11,8 @@ The gamma math is the engine in `package/contents/code/spx_gamma.py`
 (SqueezeMetrics-style naive GEX, Black-Scholes gamma, zero-crossing flip).
 `fetch_gamma.py` wraps it and prints one JSON line for the QML side.
 
+<img width="432" height="330" alt="image" src="https://github.com/user-attachments/assets/685f11ec-388d-4662-93b4-3e2836beac26" />
+
 ## Panel display modes
 
 Switchable in the widget settings (**Panel display**):
