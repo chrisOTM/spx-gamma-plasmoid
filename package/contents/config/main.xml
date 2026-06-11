@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kcfg xmlns="http://www.kde.org/standards/kcfg/1.0"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="http://www.kde.org/standards/kcfg/1.0
+      http://www.kde.org/standards/kcfg/1.0/kcfg.xsd">
+  <kcfgfile name=""/>
+  <group name="General">
+    <entry name="refreshIntervalMinutes" type="Int">
+      <default>15</default>
+      <min>1</min>
+    </entry>
+    <!-- 0 = Price + regime color, 1 = Net GEX, 2 = Regime glyph -->
+    <entry name="compactMode" type="Int">
+      <default>0</default>
+      <min>0</min>
+      <max>2</max>
+    </entry>
+    <entry name="maxDte" type="Int">
+      <default>90</default>
+      <min>1</min>
+      <max>730</max>
+    </entry>
+  </group>
+</kcfg>

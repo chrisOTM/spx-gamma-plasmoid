@@ -1,0 +1,396 @@
+import QtQuick
+import QtQuick.Layouts
+import QtQuick.Controls as QQC2
+import org.kde.kirigami as Kirigami
+import org.kde.plasma.components as PlasmaComponents3
+import org.kde.plasma.plasmoid
+import org.kde.plasma.plasma5support as Plasma5Support
+
+PlasmoidItem {
+    id: root
+
+    Plasmoid.title: i18n("SPX Dealer Gamma")
+    Plasmoid.icon: "office-chart-line"
+    toolTipMainText: Plasmoid.title
+    toolTipSubText: i18n("SPX dealer GEX & gamma flip via CBOE delayed quotes")
+
+    // ── State ────────────────────────────────────────────────────────────────
+    property real   spot:            NaN
+    property real   netGex:          NaN     // Bn$ per 1%
+    property string regime:          ""      // "positive" | "negative"
+    property real   flip:            NaN
+    property real   flipDistance:    NaN
+    property real   flipDistancePct: NaN
+
+    property bool   hasData:         false
+    property string status:          "loading"
+    property string errorMessage:    ""
+    property string lastUpdate:           ""
+    property string lastSuccessfulUpdate: ""
+    property bool   isRefreshing:    false
+    property int    refreshIntervalMinutes: Math.max(1, plasmoid.configuration.refreshIntervalMinutes)
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
+    readonly property color regimeColor: {
+        if (!root.hasData || root.regime.length === 0) return Kirigami.Theme.disabledTextColor
+        return root.regime === "positive"
+            ? Kirigami.Theme.positiveTextColor
+            : Kirigami.Theme.negativeTextColor
+    }
+    readonly property string regimeGlyph: {
+        if (!root.hasData || root.regime.length === 0) return "—"
+        return root.regime === "positive" ? "▲" : "▼"
+    }
+    readonly property string spotText:   root.hasData && !isNaN(root.spot) ? root.spot.toFixed(1) : "—"
+    readonly property string gexText: {
+        if (!root.hasData || isNaN(root.netGex)) return "—"
+        return (root.netGex >= 0 ? "+" : "") + root.netGex.toFixed(2)
+    }
+    readonly property string flipText:   root.hasData && !isNaN(root.flip) ? Math.round(root.flip).toString() : "—"
+    readonly property string flipDeltaText: {
+        if (!root.hasData || isNaN(root.flipDistance)) return "—"
+        var d  = (root.flipDistance >= 0 ? "+" : "") + Math.round(root.flipDistance)
+        var dp = (root.flipDistancePct >= 0 ? "+" : "") + root.flipDistancePct.toFixed(2)
+        return d + " (" + dp + "%)"
+    }
+
+    // ── Compact representation (panel) ──────────────────────────────────────
+    compactRepresentation: Item {
+        implicitWidth:  Math.round(Kirigami.Units.gridUnit * 2.8)
+        implicitHeight: Math.round(Kirigami.Units.gridUnit * 2)
+
+        MouseArea {
+            anchors.fill: parent
+            onClicked: plasmoid.expanded = !plasmoid.expanded
+        }
+
+        // mode 0: SPX price + regime color, flip-distance subtext
+        ColumnLayout {
+            anchors.centerIn: parent
+            spacing: 0
+            visible: plasmoid.configuration.compactMode === 0
+
+            PlasmaComponents3.Label {
+                Layout.alignment: Qt.AlignHCenter
+                text: root.spotText
+                font.pointSize: Kirigami.Units.gridUnit * 0.85
+                color: root.status === "error" ? Kirigami.Theme.negativeTextColor : root.regimeColor
+            }
+            PlasmaComponents3.Label {
+                Layout.alignment: Qt.AlignHCenter
+                text: root.hasData && !isNaN(root.flipDistance)
+                    ? "flip " + (root.flipDistance >= 0 ? "+" : "") + Math.round(root.flipDistance)
+                    : "SPX"
+                font.pointSize: Kirigami.Units.gridUnit * 0.5
+                color: Kirigami.Theme.disabledTextColor
+            }
+        }
+
+        // mode 1: Net GEX value (colored by sign) + SPX price subtext
+        ColumnLayout {
+            anchors.centerIn: parent
+            spacing: 0
+            visible: plasmoid.configuration.compactMode === 1
+
+            PlasmaComponents3.Label {
+                Layout.alignment: Qt.AlignHCenter
+                text: root.gexText
+                font.pointSize: Kirigami.Units.gridUnit * 0.8
+                color: root.status === "error" ? Kirigami.Theme.negativeTextColor : root.regimeColor
+            }
+            PlasmaComponents3.Label {
+                Layout.alignment: Qt.AlignHCenter
+                text: root.spotText
+                font.pointSize: Kirigami.Units.gridUnit * 0.55
+                color: Kirigami.Theme.disabledTextColor
+            }
+        }
+
+        // mode 2: regime glyph + price below
+        ColumnLayout {
+            anchors.centerIn: parent
+            spacing: 0
+            visible: plasmoid.configuration.compactMode === 2
+
+            PlasmaComponents3.Label {
+                Layout.alignment: Qt.AlignHCenter
+                text: root.regimeGlyph
+                font.pointSize: Kirigami.Units.gridUnit * 0.95
+                color: root.status === "error" ? Kirigami.Theme.negativeTextColor : root.regimeColor
+            }
+            PlasmaComponents3.Label {
+                Layout.alignment: Qt.AlignHCenter
+                text: root.spotText
+                font.pointSize: Kirigami.Units.gridUnit * 0.6
+                color: Kirigami.Theme.disabledTextColor
+            }
+        }
+    }
+
+    // ── Full representation (numbers only) ───────────────────────────────────
+    fullRepresentation: Item {
+        Layout.minimumWidth:    Kirigami.Units.gridUnit * 14
+        Layout.minimumHeight:   Kirigami.Units.gridUnit * 10
+        Layout.preferredWidth:  Kirigami.Units.gridUnit * 16
+        Layout.preferredHeight: Kirigami.Units.gridUnit * 12
+
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: Kirigami.Units.smallSpacing * 2
+            spacing: Kirigami.Units.smallSpacing
+
+            // Header
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Kirigami.Units.smallSpacing
+
+                PlasmaComponents3.Label {
+                    text: i18n("SPX Dealer Gamma")
+                    font.bold: true
+                    Layout.fillWidth: true
+                }
+
+                PlasmaComponents3.ToolButton {
+                    icon.name: "view-refresh"
+                    enabled: !root.isRefreshing
+                    onClicked: root.fetchData()
+                    QQC2.ToolTip.visible: hovered
+                    QQC2.ToolTip.text: i18n("Refresh data")
+                }
+            }
+
+            // Error message
+            PlasmaComponents3.Label {
+                Layout.fillWidth: true
+                visible: root.status === "error" && root.errorMessage.length > 0
+                text: root.errorMessage
+                color: Kirigami.Theme.negativeTextColor
+                wrapMode: Text.WordWrap
+                font.pointSize: Kirigami.Theme.smallFont.pointSize
+            }
+
+            // Metric rows
+            GridLayout {
+                Layout.fillWidth: true
+                Layout.topMargin: Kirigami.Units.smallSpacing
+                columns: 2
+                rowSpacing: Kirigami.Units.smallSpacing
+                columnSpacing: Kirigami.Units.gridUnit
+
+                // SPX
+                PlasmaComponents3.Label {
+                    text: i18n("SPX")
+                    color: Kirigami.Theme.disabledTextColor
+                }
+                PlasmaComponents3.Label {
+                    Layout.fillWidth: true
+                    horizontalAlignment: Text.AlignRight
+                    text: root.spotText
+                    font.bold: true
+                    font.pointSize: Kirigami.Theme.defaultFont.pointSize * 1.3
+                }
+
+                // Net GEX
+                PlasmaComponents3.Label {
+                    text: i18n("Net GEX")
+                    color: Kirigami.Theme.disabledTextColor
+                }
+                PlasmaComponents3.Label {
+                    Layout.fillWidth: true
+                    horizontalAlignment: Text.AlignRight
+                    text: root.hasData && !isNaN(root.netGex)
+                        ? i18n("%1 Bn$/1%", root.gexText)
+                        : "—"
+                    font.bold: true
+                    color: root.regimeColor
+                }
+
+                // Regime
+                PlasmaComponents3.Label {
+                    text: i18n("Regime")
+                    color: Kirigami.Theme.disabledTextColor
+                }
+                PlasmaComponents3.Label {
+                    Layout.fillWidth: true
+                    horizontalAlignment: Text.AlignRight
+                    text: {
+                        if (!root.hasData || root.regime.length === 0) return "—"
+                        return root.regime === "positive"
+                            ? i18n("POSITIVE")
+                            : i18n("NEGATIVE")
+                    }
+                    color: root.regimeColor
+                }
+
+                // Flip level
+                PlasmaComponents3.Label {
+                    text: i18n("Gamma Flip")
+                    color: Kirigami.Theme.disabledTextColor
+                }
+                PlasmaComponents3.Label {
+                    Layout.fillWidth: true
+                    horizontalAlignment: Text.AlignRight
+                    text: root.flipText
+                    font.bold: true
+                }
+
+                // Distance
+                PlasmaComponents3.Label {
+                    text: i18n("Δ to Spot")
+                    color: Kirigami.Theme.disabledTextColor
+                }
+                PlasmaComponents3.Label {
+                    Layout.fillWidth: true
+                    horizontalAlignment: Text.AlignRight
+                    text: root.flipDeltaText
+                    color: Kirigami.Theme.disabledTextColor
+                }
+            }
+
+            Item { Layout.fillHeight: true }
+
+            // Status bar
+            StatusBar {
+                Layout.fillWidth: true
+                status: root.status
+                lastSuccessfulUpdate: root.lastSuccessfulUpdate
+                regime: root.regime
+                refreshIntervalMinutes: root.refreshIntervalMinutes
+            }
+        }
+    }
+
+    // ── Data source ──────────────────────────────────────────────────────────
+    Plasma5Support.DataSource {
+        id: executable
+        engine: "executable"
+        connectedSources: []
+
+        onNewData: function(sourceName, data) {
+            executable.disconnectSource(sourceName)
+            var stdout   = data["stdout"]   || ""
+            var stderr   = data["stderr"]   || ""
+            var exitCode = data["exit code"] !== undefined ? data["exit code"] : -1
+            handleFetcherOutput(stdout, stderr, exitCode)
+        }
+    }
+
+    // ── Timers ───────────────────────────────────────────────────────────────
+    Timer {
+        id: refreshTimer
+        interval: root.refreshIntervalMinutes * 60 * 1000
+        repeat: true
+        running: root.visible
+        onTriggered: fetchData()
+    }
+
+    Timer {
+        id: fetchTimeout
+        interval: 30000
+        repeat: false
+        onTriggered: {
+            root.isRefreshing = false
+            root.status = "error"
+            root.errorMessage = i18n("Fetcher did not respond within 30s. Check that python3, requests, numpy, pandas and scipy are installed.")
+        }
+    }
+
+    // ── Config reactivity ────────────────────────────────────────────────────
+    Connections {
+        target: plasmoid.configuration
+        function onRefreshIntervalMinutesChanged() {
+            root.refreshIntervalMinutes = Math.max(1, plasmoid.configuration.refreshIntervalMinutes)
+            refreshTimer.interval = root.refreshIntervalMinutes * 60 * 1000
+            refreshTimer.restart()
+        }
+        function onMaxDteChanged() {
+            root.fetchData()
+        }
+    }
+
+    // ── Lifecycle ────────────────────────────────────────────────────────────
+    Component.onCompleted: {
+        root.refreshIntervalMinutes = Math.max(1, plasmoid.configuration.refreshIntervalMinutes)
+        fetchData()
+        refreshTimer.start()
+    }
+
+    onExpandedChanged: {
+        if (plasmoid.expanded) {
+            fetchData()
+        }
+    }
+
+    // ── Functions ────────────────────────────────────────────────────────────
+    function quoteShell(value) {
+        return "'" + String(value).replace(/'/g, "'\\''") + "'"
+    }
+
+    function fetchData() {
+        if (root.isRefreshing) {
+            return
+        }
+        root.isRefreshing = true
+        root.status = root.hasData ? "refreshing" : "loading"
+        fetchTimeout.stop()
+
+        var scriptUrl = Qt.resolvedUrl("../code/fetch_gamma.py")
+        var script    = scriptUrl.toString().replace(/^file:\/\//, "")
+        var maxDte    = Math.max(1, plasmoid.configuration.maxDte)
+        var command   = "python3 " + quoteShell(script)
+                      + " --max-dte " + maxDte
+                      + " --timeout 12"
+        executable.connectSource(command)
+        fetchTimeout.start()
+    }
+
+    function handleFetcherOutput(stdout, stderr, exitCode) {
+        root.isRefreshing = false
+        fetchTimeout.stop()
+
+        if (!stdout || stdout.trim().length === 0) {
+            root.status       = "error"
+            root.errorMessage = stderr && stderr.length > 0
+                ? stderr
+                : i18n("Fetcher returned no JSON output")
+            return
+        }
+
+        try {
+            var result = JSON.parse(stdout)
+
+            if (result.status === "ok" || result.status === "partial") {
+                root.spot            = (result.spot !== null && result.spot !== undefined) ? result.spot : NaN
+                root.netGex          = (result.net_gex !== null && result.net_gex !== undefined) ? result.net_gex : NaN
+                root.regime          = result.regime || ""
+                root.flip            = (result.flip !== null && result.flip !== undefined) ? result.flip : NaN
+                root.flipDistance    = (result.flip_distance !== null && result.flip_distance !== undefined) ? result.flip_distance : NaN
+                root.flipDistancePct = (result.flip_distance_pct !== null && result.flip_distance_pct !== undefined) ? result.flip_distance_pct : NaN
+
+                root.lastUpdate = result.timestamp || ""
+                root.hasData    = !isNaN(root.spot)
+                if (root.hasData) {
+                    root.lastSuccessfulUpdate = root.lastUpdate
+                }
+
+                root.status       = result.status
+                root.errorMessage = formatErrors(result.errors || [])
+                return
+            }
+
+            root.status       = "error"
+            root.errorMessage = formatErrors(result.errors || [])
+                || i18n("Could not fetch data")
+        } catch (e) {
+            root.status       = "error"
+            root.errorMessage = i18n("Could not parse fetcher JSON: %1", e)
+        }
+    }
+
+    function formatErrors(errors) {
+        if (!errors || errors.length === 0) return ""
+        return errors.map(function(e) {
+            return e.message ? e.message : String(e)
+        }).join(", ")
+    }
+}

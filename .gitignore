@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+*.png
+chain.json
+spx_gex_per_strike.csv

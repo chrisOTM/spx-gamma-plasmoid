@@ -1,0 +1,21 @@
+{
+  "KPlugin": {
+    "Id": "com.chrisotm.spxgamma",
+    "Name": "SPX Dealer Gamma",
+    "Description": "Shows SPX dealer gamma exposure (GEX), the gamma flip level and the current SPX spot price, using CBOE delayed quotes.",
+    "Version": "0.1.0",
+    "Icon": "office-chart-line",
+    "Authors": [
+      {
+        "Name": "ChrisOTM",
+        "Email": "272263056+chrisOTM@users.noreply.github.com"
+      }
+    ],
+    "Category": "Online Services",
+    "License": "MIT",
+    "Website": "https://chrisonthemove.de",
+    "BugReportUrl": "https://github.com/chrisOTM/spx-gamma-plasmoid/issues"
+  },
+  "KPackageStructure": "Plasma/Applet",
+  "X-Plasma-API-Minimum-Version": "6.0"
+}
