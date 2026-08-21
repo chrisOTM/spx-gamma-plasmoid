@@ -55,6 +55,9 @@ from scipy.stats import norm
 # Konfiguration / Modellannahmen
 # --------------------------------------------------------------------------- #
 CBOE_URL = "https://cdn.cboe.com/api/global/delayed_quotes/options/{sym}.json"
+# Reiner Index-Quote ohne Optionschain: ~540 Byte statt ~14 MB. Gleiche
+# "data"-Struktur wie oben, nur ohne "options" -> extract_spot() passt auf beide.
+CBOE_QUOTE_URL = "https://cdn.cboe.com/api/global/delayed_quotes/quotes/{sym}.json"
 CBOE_SYMBOL = "_SPX"          # SPX-Index bei CBOE
 CONTRACT_MULTIPLIER = 100      # 1 SPX-Kontrakt = 100 x Index
 
@@ -82,14 +85,27 @@ OSI_RE = re.compile(r"^(?P<root>[A-Z\^_]+)(?P<exp>\d{6})(?P<cp>[CP])(?P<strike>\
 # --------------------------------------------------------------------------- #
 # 1) Datenbeschaffung
 # --------------------------------------------------------------------------- #
-def fetch_cboe_chain(symbol=CBOE_SYMBOL, timeout=30):
-    """Laedt den kompletten SPX-Optionschain als JSON von CBOE."""
+def _fetch_json(url, timeout):
     import requests
-    url = CBOE_URL.format(sym=symbol)
     headers = {"User-Agent": "Mozilla/5.0 (compatible; gamma-calc/1.0)"}
     resp = requests.get(url, headers=headers, timeout=timeout)
     resp.raise_for_status()
     return resp.json()
+
+
+def fetch_cboe_chain(symbol=CBOE_SYMBOL, timeout=30):
+    """Laedt den kompletten SPX-Optionschain als JSON von CBOE (~14 MB)."""
+    return _fetch_json(CBOE_URL.format(sym=symbol), timeout)
+
+
+def fetch_cboe_quote(symbol=CBOE_SYMBOL, timeout=30):
+    """Laedt nur den Index-Quote (~540 Byte) -- fuer reine Spot-Updates.
+
+    Open Interest aktualisiert einmal taeglich, GEX und Flip bleiben zwischen
+    den EOD-Snapshots konstant. Intraday muss deshalb nur der Preis nachgezogen
+    werden, und dafuer den kompletten Chain zu laden waere Verschwendung.
+    """
+    return _fetch_json(CBOE_QUOTE_URL.format(sym=symbol), timeout)
 
 
 def load_chain_from_file(path):
@@ -100,16 +116,17 @@ def load_chain_from_file(path):
 # --------------------------------------------------------------------------- #
 # 2) Parsing -> DataFrame
 # --------------------------------------------------------------------------- #
-def parse_chain(raw, spot_override=None):
-    """Wandelt das CBOE-JSON in ein bereinigtes DataFrame um und ermittelt Spot."""
-    data = raw.get("data", raw)
-    options = data.get("options", [])
-    if not options:
-        raise ValueError("Keine Optionsdaten im JSON gefunden.")
+def extract_spot(raw, spot_override=None):
+    """Spot aus einem CBOE-JSON ziehen -- Chain- wie Quote-Antwort.
 
-    # Spot bestimmen: mehrere Felder als Fallback (current_price kann 0 sein).
-    spot = spot_override
-    if spot is None:
+    Mehrere Felder als Fallback, weil current_price ausserhalb der Handelszeit
+    0 sein kann.
+    """
+    if spot_override is not None:
+        spot = spot_override
+    else:
+        data = raw.get("data", raw)
+        spot = None
         for key in ("current_price", "close", "last", "prev_day_close"):
             val = data.get(key)
             if val and float(val) > 0:
@@ -120,6 +137,17 @@ def parse_chain(raw, spot_override=None):
             "Spotpreis konnte nicht ermittelt werden. "
             "Bitte mit --spot manuell setzen."
         )
+    return float(spot)
+
+
+def parse_chain(raw, spot_override=None):
+    """Wandelt das CBOE-JSON in ein bereinigtes DataFrame um und ermittelt Spot."""
+    data = raw.get("data", raw)
+    options = data.get("options", [])
+    if not options:
+        raise ValueError("Keine Optionsdaten im JSON gefunden.")
+
+    spot = extract_spot(raw, spot_override=spot_override)
 
     now_et = datetime.now(ET)
     today_et = now_et.date()

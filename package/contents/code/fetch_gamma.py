@@ -43,7 +43,9 @@ try:
     from spx_gamma import (
         MAX_IV,
         compute_spot_gex,
+        extract_spot,
         fetch_cboe_chain,
+        fetch_cboe_quote,
         filter_chain,
         find_flip_levels,
         gamma_profile,
@@ -78,10 +80,14 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
 
-    # 1) data
+    # 1) data. Spot-only pulls the ~540 byte index quote instead of the ~14 MB
+    # option chain -- the chain carries nothing a price refresh needs.
+    live_quote_only = args.spot_only and not args.from_file
     try:
         if args.from_file:
             raw = load_chain_from_file(args.from_file)
+        elif live_quote_only:
+            raw = fetch_cboe_quote(timeout=args.timeout)
         else:
             raw = fetch_cboe_chain(timeout=args.timeout)
     except Exception as exc:
@@ -92,9 +98,9 @@ def main() -> int:
     # heavy gamma computation and emit just the price for interval refreshes.
     if args.spot_only:
         try:
-            _df, spot = parse_chain(raw, spot_override=args.spot)
+            spot = extract_spot(raw, spot_override=args.spot)
         except Exception as exc:
-            emit(error_result(f"Could not parse option chain: {exc}"))
+            emit(error_result(f"Could not read spot price: {exc}"))
             return 0
         emit({
             "status": "ok",

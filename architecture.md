@@ -8,11 +8,13 @@ main.qml
   (engine: "executable")                 │ argparse: --max-dte --timeout ...
                                           │ guarded imports (numpy/scipy/...)
   Timer (1-min tick → daily EOD fetch)    ▼
-  fetchTimeout (30 s)                  spx_gamma.py  (engine, reused as library)
-                                          fetch_cboe_chain() ─► CBOE delayed JSON
+  Timer (15-min tick → --spot-only)    spx_gamma.py  (engine, reused as library)
+  fetchTimeout (30 s)                     fetch_cboe_chain() ─► chain JSON ~14 MB
+                                          fetch_cboe_quote() ─► quote JSON ~540 B
   onNewData(stdout) ◄──one JSON line──    parse_chain()      ─► DataFrame + spot
-  handleFetcherOutput()                   compute_spot_gex() ─► net GEX
-    JSON.parse → props                    gamma_profile()    ─► GEX-vs-spot curve
+  handleFetcherOutput()                   filter_chain()     ─► live, sane rows
+    JSON.parse → props                    compute_spot_gex() ─► net GEX
+                                          gamma_profile()    ─► GEX-vs-spot curve
                                           find_flip_levels() ─► zero crossings
   compactRepresentation                 emit JSON:
     3 modes (configuration.compactMode)   {spot, net_gex, regime, flip,
@@ -43,6 +45,11 @@ status. Stale data stays on screen during refresh/error (`hasData` /
 
 ## Data source
 
-CBOE delayed quotes: `https://cdn.cboe.com/api/global/delayed_quotes/options/_SPX.json`
-— free, no API key, ~15 min delayed (EOD snapshot after close). Provides open
-interest, IV and greeks per strike.
+CBOE delayed quotes, free and without an API key, ~15 min delayed (EOD snapshot
+after close):
+
+- `.../delayed_quotes/options/_SPX.json` — full chain, ~14 MB, open interest, IV
+  and greeks per strike. Fetched once per weekday for the EOD GEX and flip.
+- `.../delayed_quotes/quotes/_SPX.json` — index quote only, ~540 bytes, same
+  `data` shape minus `options`. Used by `--spot-only` for the intraday price
+  poll, so a price refresh costs ~1/25000 of a chain download.

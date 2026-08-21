@@ -68,16 +68,25 @@ bash scripts/uninstall.sh
 ## Settings
 
 - **Daily EOD refresh** (US Eastern time, default 16:30 ET) — one fetch per
-  weekday after the close, since Open Interest only updates once a day. Use the
-  refresh button or expand the widget to pull on demand.
+  weekday after the close, since Open Interest only updates once a day. This is
+  the only time the ~14 MB option chain is downloaded. Use the refresh button to
+  force it.
+- **Intraday SPX price refresh** (default 15 min, US market hours only) — pulls
+  the ~540 byte CBOE index quote and updates the spot price and the distance to
+  the flip level. GEX and the flip level itself stay fixed until the next EOD
+  refresh, because they depend on Open Interest. Expanding the widget triggers
+  the same light refresh.
 - **Panel display** (the three compact modes above)
-- **Max days to expiry** (default 90) — caps which option expiries feed the GEX
+- **Max days to expiry** (default 90) — caps which option expiries feed the GEX.
+  The flip level depends on this window: on a sample snapshot the 90-day cap
+  gave 7696 against 7668 across all expiries.
 
 ## Manual test of the fetcher
 
 ```bash
 cd package/contents/code
-python3 fetch_gamma.py                       # live CBOE
+python3 fetch_gamma.py                       # live CBOE, full GEX + flip
+python3 fetch_gamma.py --spot-only           # light index quote only
 python3 fetch_gamma.py --from-file chain.json # saved snapshot
 ```
 
@@ -89,6 +98,12 @@ A saved snapshot can be produced with the engine directly:
 The dealer positioning model (long calls / short puts) is an **assumption**, not
 a fact — see the docstring in `spx_gamma.py`. The flip level is the nearest
 zero-crossing of the GEX-vs-spot profile to the current spot.
+
+Time to expiry is measured to the actual settlement instant in US Eastern time —
+09:30 ET for the AM-settled SPX monthlies, 16:00 ET for SPXW and the rest — so
+contracts that have already settled drop out of the EOD snapshot instead of
+contributing phantom gamma. Quotes above 300% implied vol are discarded
+(`--max-iv`).
 
 ## License
 

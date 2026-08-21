@@ -351,7 +351,14 @@ PlasmoidItem {
 
     onExpandedChanged: {
         if (plasmoid.expanded) {
-            fetchData()
+            // GEX and flip only move with the daily OI snapshot, so opening the
+            // popup just refreshes the price via the light quote endpoint. The
+            // refresh button still forces a full reload.
+            if (root.hasData) {
+                fetchSpot()
+            } else {
+                fetchData()
+            }
         }
     }
 
@@ -421,7 +428,8 @@ PlasmoidItem {
         fetchTimeout.start()
     }
 
-    // Lightweight intraday refresh: SPX spot only. Shares isRefreshing so it
+    // Lightweight intraday refresh: SPX spot only. Hits the ~540 byte CBOE
+    // index quote instead of the ~14 MB option chain. Shares isRefreshing so it
     // won't collide with a full fetch in flight. Doesn't blank the panel.
     function fetchSpot() {
         if (root.isRefreshing) {
