@@ -11,6 +11,7 @@ Kirigami.FormLayout {
     property alias cfg_spotRefreshIntervalMinutes: spotInterval.value
     property int   cfg_compactMode: 0
     property alias cfg_maxDte: maxDte.value
+    property alias cfg_wallMinDte: wallMinDte.value
 
     // SPX option data (Open Interest) is published once per day, so the
     // widget fetches a single EOD snapshot after the US market close.
@@ -76,5 +77,20 @@ Kirigami.FormLayout {
         from: 1
         to: 730
         value: 90
+    }
+
+    // Same-day expiries carry open interest that is gone by the close; a wall
+    // is meant to be a level that survives the session.
+    QQC2.SpinBox {
+        id: wallMinDte
+        Kirigami.FormData.label: i18n("Wall minimum days to expiry:")
+        from: 0
+        to: 60
+        value: 1
+    }
+    QQC2.Label {
+        text: i18n("0 includes today's expiry in the put/call walls.")
+        font: Kirigami.Theme.smallFont
+        color: Kirigami.Theme.disabledTextColor
     }
 }

@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Controls as QQC2
 import org.kde.kirigami as Kirigami
 import org.kde.plasma.components as PlasmaComponents3
 
@@ -10,6 +11,11 @@ RowLayout {
     property string lastSuccessfulUpdate: ""
     property string regime: ""
     property string refreshLabel: ""
+    // Age of the data itself (last index print), not of the fetch. A fetch on a
+    // holiday returns a fresh clock on stale numbers, so the fetch time alone
+    // cannot tell a trader whether what is on screen is current.
+    property string dataAgeText: ""
+    property bool   dataIsStale: false
 
     spacing: Kirigami.Units.smallSpacing * 2
 
@@ -50,14 +56,29 @@ RowLayout {
         text: "|"
     }
 
+    // Data age is the headline, the fetch clock only the tooltip.
     PlasmaComponents3.Label {
+        id: ageLabel
+        readonly property string fetchText:
+            statusBar.lastSuccessfulUpdate.length > 0
+                ? statusBar.formatTimestamp(statusBar.lastSuccessfulUpdate)
+                : ""
         font.pointSize: Kirigami.Theme.smallFont.pointSize
-        color: Kirigami.Theme.disabledTextColor
-        text: statusBar.lastSuccessfulUpdate.length > 0
-            ? statusBar.formatTimestamp(statusBar.lastSuccessfulUpdate)
-            : i18n("No data yet")
+        color: statusBar.dataIsStale
+            ? Kirigami.Theme.neutralTextColor
+            : Kirigami.Theme.disabledTextColor
+        text: {
+            if (statusBar.dataAgeText.length > 0)
+                return i18n("data %1", statusBar.dataAgeText)
+            if (ageLabel.fetchText.length > 0) return ageLabel.fetchText
+            return i18n("No data yet")
+        }
         elide: Text.ElideRight
         Layout.fillWidth: true
+
+        HoverHandler { id: ageHover }
+        QQC2.ToolTip.visible: ageHover.hovered && ageLabel.fetchText.length > 0
+        QQC2.ToolTip.text: i18n("Last fetch: %1", ageLabel.fetchText)
     }
 
     PlasmaComponents3.Label {

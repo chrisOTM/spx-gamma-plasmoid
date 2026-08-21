@@ -31,6 +31,14 @@
       <min>0</min>
       <max>2</max>
     </entry>
+    <!-- Minimum DTE for the put/call walls. Same-day expiries carry big
+         open interest that evaporates at the close and inflates strikes near
+         spot, while a wall is read as a multi-day level. 0 = count them. -->
+    <entry name="wallMinDte" type="Int">
+      <default>1</default>
+      <min>0</min>
+      <max>60</max>
+    </entry>
     <entry name="maxDte" type="Int">
       <default>90</default>
       <min>1</min>

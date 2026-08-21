@@ -41,10 +41,12 @@ Abhaengigkeiten:
 """
 
 import argparse
+import gzip
 import json
+import os
 import re
 import sys
-from datetime import datetime, time as dtime
+from datetime import datetime, time as dtime, timezone
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -78,6 +80,14 @@ PM_SETTLE = dtime(16, 0)
 MIN_T_YEARS = 1.0 / (365.0 * 24.0)
 # Obergrenze fuer plausible IV (300 %).
 MAX_IV = 3.0
+# Walls: heutigen Verfall per Default ausschliessen. 0DTE-OI verdampft taeglich,
+# eine Wall soll ein mehrtaegiges Level sein. Siehe find_walls().
+WALL_MIN_DTE = 1
+# Roh-Chain-Cache. Der EOD-Lauf schreibt ihn, der Intraday-Lauf liest ihn und
+# rechnet GEX/Flip/Walls mit frischem Spot und frischem T neu -- ohne die 13 MB
+# noch einmal zu laden.
+CACHE_DIRNAME = "spx-gamma-plasmoid"
+CACHE_FILENAME = "chain.json.gz"
 
 OSI_RE = re.compile(r"^(?P<root>[A-Z\^_]+)(?P<exp>\d{6})(?P<cp>[CP])(?P<strike>\d{8})$")
 
@@ -140,6 +150,106 @@ def extract_spot(raw, spot_override=None):
     return float(spot)
 
 
+def _parse_feed_dt(value, tz):
+    """CBOE-Zeitstempel ("YYYY-MM-DD HH:MM:SS" / ISO) in ein aware datetime."""
+    if not value:
+        return None
+    text = str(value).strip().replace(" ", "T")
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return dt.replace(tzinfo=tz) if dt.tzinfo is None else dt
+
+
+def extract_meta(raw, now=None):
+    """Datenalter und IV30 aus einer CBOE-Antwort (Chain wie Quote).
+
+    Der Feed liefert zwei Zeiten, die das Widget bisher ignoriert hat:
+      * top-level "timestamp"      -- Feed-Stand, UTC
+      * data.last_trade_time       -- letzter Index-Print, US-Eastern
+    Beide sind noetig, um Datenalter von Prozessalter zu trennen: ein Abruf am
+    Feiertag liefert eine frische Abrufzeit auf uralten Daten.
+
+    iv30/iv30_change_percent kommen im selben Payload mit und sind fuer die
+    Regime-Einordnung relevant (positives Gamma bei IV30 12 heisst etwas
+    anderes als bei IV30 25).
+    """
+    now = now or datetime.now(timezone.utc)
+    data = raw.get("data", raw)
+
+    feed_dt = _parse_feed_dt(raw.get("timestamp"), timezone.utc)
+    quote_dt = _parse_feed_dt(data.get("last_trade_time"), ET)
+    # Datenalter am echten Index-Print messen; ohne den auf den Feed-Stand.
+    age_ref = quote_dt or feed_dt
+    age_min = ((now - age_ref).total_seconds() / 60.0) if age_ref else None
+
+    def _num(key):
+        val = data.get(key)
+        try:
+            return float(val) if val is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    return {
+        "feed_time": feed_dt.isoformat(timespec="seconds") if feed_dt else None,
+        "quote_time": quote_dt.isoformat(timespec="seconds") if quote_dt else None,
+        "age_minutes": round(age_min, 1) if age_min is not None else None,
+        "iv30": _num("iv30"),
+        "iv30_change_pct": _num("iv30_change_percent"),
+        "prev_close": _num("prev_day_close"),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# 1b) Chain-Cache
+# --------------------------------------------------------------------------- #
+def default_cache_path():
+    """XDG-Cache-Pfad fuer den Roh-Chain-Snapshot."""
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    return os.path.join(base, CACHE_DIRNAME, CACHE_FILENAME)
+
+
+def save_chain_cache(raw, path=None):
+    """Roh-Chain gzip-komprimiert ablegen (13 MB -> ~1.5 MB), atomar."""
+    path = path or default_cache_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with gzip.open(tmp, "wt", encoding="utf-8") as fh:
+        json.dump(raw, fh)
+    os.replace(tmp, path)
+    return path
+
+
+def load_chain_cache(path=None):
+    """Gecachte Roh-Chain laden. Wirft, wenn nicht vorhanden oder defekt."""
+    path = path or default_cache_path()
+    with gzip.open(path, "rt", encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def cache_age_hours(path=None, now=None):
+    """Alter der Cache-Datei in Stunden, None wenn nicht vorhanden."""
+    path = path or default_cache_path()
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return None
+    now = now or datetime.now(timezone.utc)
+    return round((now - datetime.fromtimestamp(mtime, timezone.utc))
+                 .total_seconds() / 3600.0, 2)
+
+
+def settlement_dt(root, exp):
+    """Echter Settlement-Zeitpunkt (ET) einer Expiry.
+
+    SPX-Monatsverfall ist AM-settled (09:30 ET, Opening-Print), SPXW und der
+    Rest PM-settled (16:00 ET).
+    """
+    settle = AM_SETTLE if root in AM_SETTLED_ROOTS else PM_SETTLE
+    return datetime.combine(exp, settle, tzinfo=ET)
+
+
 def parse_chain(raw, spot_override=None):
     """Wandelt das CBOE-JSON in ein bereinigtes DataFrame um und ermittelt Spot."""
     data = raw.get("data", raw)
@@ -161,8 +271,7 @@ def parse_chain(raw, spot_override=None):
         exp = datetime.strptime("20" + m.group("exp"), "%Y%m%d").date()
         strike = int(m.group("strike")) / 1000.0
         root = m.group("root")
-        settle = AM_SETTLE if root in AM_SETTLED_ROOTS else PM_SETTLE
-        settle_dt = datetime.combine(exp, settle, tzinfo=ET)
+        settle_dt = settlement_dt(root, exp)
         rows.append(
             {
                 "symbol": sym,
@@ -302,7 +411,7 @@ def per_strike_table(df, spot, r, q):
     return agg.sort_values("strike")
 
 
-def find_walls(df, spot, r=0.045, q=0.013):
+def find_walls(df, spot, r=0.045, q=0.013, min_dte=WALL_MIN_DTE):
     """Put Wall und Call Wall: die Strikes mit der groessten Gamma-Exposure.
 
     Call Wall = Strike >= Spot mit der groessten Call-Gamma-Exposure,
@@ -315,14 +424,27 @@ def find_walls(df, spot, r=0.045, q=0.013):
     von selbst gegen 0 gedaempft werden; ein zusaetzliches Strike-Fenster
     braucht es deshalb nicht.
 
-    Rueckgabe: dict mit call_wall/put_wall (Strike) und den zugehoerigen
-    Exposures in USD pro 1 % Indexbewegung. Fehlt eine Seite komplett, sind
-    ihre Felder None.
+    min_dte schneidet kurze Laufzeiten weg (Default 1 = heutiger Verfall raus).
+    Deren Open Interest verdampft am selben Tag, waehrend eine Wall als
+    mehrtaegiges Level gelesen wird; ausserdem laedt die hohe Nahfaelligkeits-
+    Gamma spot-nahe Strikes kuenstlich auf. Auf echten SPX-Daten dominiert
+    ohnehin der naechste Monatsverfall, der Filter ist also eine Korrektur
+    zweiter Ordnung -- min_dte=0 stellt das alte Verhalten wieder her.
+
+    Rueckgabe: dict mit call_wall/put_wall (Strike), den zugehoerigen
+    Exposures in USD pro 1 % Indexbewegung und dem verwendeten min_dte.
+    Fehlt eine Seite komplett, sind ihre Felder None.
     """
     out = {"call_wall": None, "call_wall_gex": None,
-           "put_wall": None, "put_wall_gex": None}
+           "put_wall": None, "put_wall_gex": None,
+           "wall_min_dte": int(min_dte)}
     if df.empty:
         return out
+
+    if min_dte:
+        df = df[df["dte"] >= min_dte]
+        if df.empty:
+            return out
 
     gamma = bs_gamma(spot, df["strike"].values, df["T"].values,
                      df["iv"].values, r=r, q=q)
@@ -413,6 +535,9 @@ def main():
                     help="JSON-Snapshot statt Live-Abruf laden")
     ap.add_argument("--save-json", type=str, default=None,
                     help="Roh-JSON in Datei sichern")
+    ap.add_argument("--wall-min-dte", type=int, default=WALL_MIN_DTE,
+                    help=f"Mindest-DTE fuer Put/Call Wall, Default {WALL_MIN_DTE} "
+                         "(0 = heutigen Verfall mitzaehlen)")
     ap.add_argument("--use-cboe-gamma", action="store_true",
                     help="fuer Spot-GEX das von CBOE gelieferte Gamma nutzen")
     ap.add_argument("--no-chart", action="store_true")
@@ -425,6 +550,7 @@ def main():
     else:
         print("[..] Lade CBOE-Daten ...")
         raw = fetch_cboe_chain()
+        save_chain_cache(raw)
         if args.save_json:
             with open(args.save_json, "w", encoding="utf-8") as fh:
                 json.dump(raw, fh)
@@ -452,12 +578,21 @@ def main():
     agg = per_strike_table(df, spot, r=args.rate, q=args.div)
 
     # Put/Call Wall
-    walls = find_walls(df, spot, r=args.rate, q=args.div)
+    walls = find_walls(df, spot, r=args.rate, q=args.div,
+                       min_dte=args.wall_min_dte)
 
     # Report
     print("\n" + "=" * 58)
     print(f"  SPX Dealer Gamma Report   ({datetime.now():%Y-%m-%d %H:%M})")
     print("=" * 58)
+    meta = extract_meta(raw)
+    if meta["quote_time"]:
+        print(f"  Datenstand (Index)      : {meta['quote_time']}"
+              f"  ({meta['age_minutes']:.0f} min alt)")
+    if meta["iv30"] is not None:
+        chg = meta["iv30_change_pct"]
+        chg_txt = f"  ({chg:+.2f} %)" if chg is not None else ""
+        print(f"  IV30                    : {meta['iv30']:.2f}{chg_txt}")
     print(f"  Spot (Index)            : {spot:,.2f}")
     print(f"  Optionen einbezogen     : {len(df):,}")
     print(f"  Summe Open Interest     : {df['oi'].sum():,.0f}")
@@ -477,6 +612,7 @@ def main():
     else:
         print("  Gamma Flip Level        : kein Nulldurchgang im Raster gefunden")
     print("-" * 58)
+    print(f"  Wall-Fenster            : DTE >= {args.wall_min_dte}")
     for label, key in (("Call Wall", "call_wall"), ("Put Wall", "put_wall")):
         strike = walls[key]
         if strike is None:

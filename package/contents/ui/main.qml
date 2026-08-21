@@ -30,6 +30,16 @@ PlasmoidItem {
     property real   putWallGex:       NaN
     property real   putWallDistance:  NaN
 
+    // IV30 and data age ride along in every CBOE payload -- regime alone is not
+    // a decision, positive gamma at IV30 12 reads differently than at IV30 25.
+    property real   iv30:            NaN
+    property real   iv30ChangePct:   NaN
+    // Age of the *data* (last index print), not of the fetch. A fresh fetch on
+    // a holiday still returns stale data; only this distinguishes the two.
+    property real   dataAgeMin:      NaN
+    property real   chainAgeHours:   NaN
+    property string dataMode:        ""      // "full" | "intraday" | "spot"
+
     property bool   hasData:         false
     property string status:          "loading"
     property string errorMessage:    ""
@@ -77,6 +87,31 @@ PlasmoidItem {
         if (isNaN(distance)) return s
         return s + " (" + (distance >= 0 ? "+" : "") + Math.round(distance) + ")"
     }
+    readonly property string iv30Text: {
+        if (!root.hasData || isNaN(root.iv30)) return "—"
+        var t = root.iv30.toFixed(2)
+        if (!isNaN(root.iv30ChangePct)) {
+            t += "  (" + (root.iv30ChangePct >= 0 ? "+" : "") + root.iv30ChangePct.toFixed(1) + "%)"
+        }
+        return t
+    }
+    readonly property color iv30Color: {
+        if (!root.hasData || isNaN(root.iv30ChangePct)) return Kirigami.Theme.textColor
+        // Rising IV = richer premium for a seller, so it is not "bad" -- keep it
+        // neutral-informative rather than borrowing the P&L colour scheme.
+        return Kirigami.Theme.textColor
+    }
+    // Data age in minutes -> "18 min" / "3.2 h" / "2 d".
+    readonly property string dataAgeText: {
+        if (isNaN(root.dataAgeMin)) return ""
+        var m = root.dataAgeMin
+        if (m < 90) return Math.round(m) + " min"
+        if (m < 60 * 36) return (m / 60).toFixed(1) + " h"
+        return Math.round(m / 1440) + " d"
+    }
+    // CBOE is ~15 min delayed by design; flag only clearly stale data.
+    readonly property bool dataIsStale: !isNaN(root.dataAgeMin) && root.dataAgeMin > 45
+
     readonly property string callWallText: root.wallText(root.callWall, root.callWallDistance)
     readonly property string putWallText:  root.wallText(root.putWall,  root.putWallDistance)
 
@@ -156,9 +191,9 @@ PlasmoidItem {
     // ── Full representation (numbers only) ───────────────────────────────────
     fullRepresentation: Item {
         Layout.minimumWidth:    Kirigami.Units.gridUnit * 14
-        Layout.minimumHeight:   Kirigami.Units.gridUnit * 13
+        Layout.minimumHeight:   Kirigami.Units.gridUnit * 14
         Layout.preferredWidth:  Kirigami.Units.gridUnit * 16
-        Layout.preferredHeight: Kirigami.Units.gridUnit * 15
+        Layout.preferredHeight: Kirigami.Units.gridUnit * 16
 
         ColumnLayout {
             anchors.fill: parent
@@ -248,6 +283,18 @@ PlasmoidItem {
                     color: root.regimeColor
                 }
 
+                // IV30 (CBOE 30-day implied vol, ships with every quote)
+                PlasmaComponents3.Label {
+                    text: i18n("IV30")
+                    color: Kirigami.Theme.disabledTextColor
+                }
+                PlasmaComponents3.Label {
+                    Layout.fillWidth: true
+                    horizontalAlignment: Text.AlignRight
+                    text: root.iv30Text
+                    color: root.iv30Color
+                }
+
                 // Flip level
                 PlasmaComponents3.Label {
                     text: i18n("Gamma Flip")
@@ -312,6 +359,8 @@ PlasmoidItem {
                 lastSuccessfulUpdate: root.lastSuccessfulUpdate
                 regime: root.regime
                 refreshLabel: root.eodRefreshLabel
+                dataAgeText: root.dataAgeText
+                dataIsStale: root.dataIsStale
             }
         }
     }
@@ -381,11 +430,17 @@ PlasmoidItem {
         function onMaxDteChanged() {
             root.fetchData()
         }
+        // Wall window only reshuffles strikes -- the cached chain is enough.
+        function onWallMinDteChanged() {
+            root.fetchIntraday()
+        }
     }
 
     // ── Lifecycle ────────────────────────────────────────────────────────────
     Component.onCompleted: {
-        fetchData()
+        // Restart/login: recompute from the cached chain instead of pulling the
+        // full chain again. The fetcher downloads it only if no cache is there.
+        fetchIntraday()
         // If we start up after today's refresh time, mark today done so the
         // ticker doesn't immediately fire a duplicate fetch.
         var et = root.etNow()
@@ -401,11 +456,9 @@ PlasmoidItem {
             // GEX and flip only move with the daily OI snapshot, so opening the
             // popup just refreshes the price via the light quote endpoint. The
             // refresh button still forces a full reload.
-            if (root.hasData) {
-                fetchSpot()
-            } else {
-                fetchData()
-            }
+            // Intraday recompute is cheap and self-heals into a full fetch when
+            // the chain cache is missing, so it is the right call either way.
+            fetchIntraday()
         }
     }
 
@@ -444,7 +497,7 @@ PlasmoidItem {
         var et = root.etNow()
         if (root.isEtWeekend(et)) return
         if (!root.isEtMarketHours(et)) return
-        root.fetchSpot()
+        root.fetchIntraday()
     }
     // Fire one fetch per weekday once we're past the configured ET time.
     function maybeEodRefresh() {
@@ -467,18 +520,29 @@ PlasmoidItem {
 
         var scriptUrl = Qt.resolvedUrl("../code/fetch_gamma.py")
         var script    = scriptUrl.toString().replace(/^file:\/\//, "")
-        var maxDte    = Math.max(1, plasmoid.configuration.maxDte)
         var command   = "python3 " + quoteShell(script)
-                      + " --max-dte " + maxDte
-                      + " --timeout 12"
+                      + " --mode full"
+                      + root.commonArgs()
         executable.connectSource(command)
         fetchTimeout.start()
     }
 
-    // Lightweight intraday refresh: SPX spot only. Hits the ~540 byte CBOE
-    // index quote instead of the ~14 MB option chain. Shares isRefreshing so it
-    // won't collide with a full fetch in flight. Doesn't blank the panel.
-    function fetchSpot() {
+    // Arguments shared by the full and the intraday run, so both windows the
+    // chain identically -- otherwise the intraday recompute would silently
+    // disagree with the EOD numbers it replaces.
+    function commonArgs() {
+        return " --max-dte " + Math.max(1, plasmoid.configuration.maxDte)
+             + " --wall-min-dte " + Math.max(0, plasmoid.configuration.wallMinDte)
+             + " --timeout 12"
+    }
+
+    // Intraday refresh: pulls the ~540 byte CBOE index quote and recomputes
+    // GEX, regime, flip and walls from the cached chain at the live spot and
+    // with freshly decayed time to expiry. No chain download. Open interest
+    // stays EOD -- everything that does move during the session now follows.
+    // Falls back to a full fetch inside the fetcher when no cache exists.
+    // Shares isRefreshing so it won't collide with a full fetch in flight.
+    function fetchIntraday() {
         if (root.isRefreshing) {
             return
         }
@@ -488,8 +552,8 @@ PlasmoidItem {
         var scriptUrl = Qt.resolvedUrl("../code/fetch_gamma.py")
         var script    = scriptUrl.toString().replace(/^file:\/\//, "")
         var command   = "python3 " + quoteShell(script)
-                      + " --spot-only"
-                      + " --timeout 12"
+                      + " --mode intraday"
+                      + root.commonArgs()
         executable.connectSource(command)
         fetchTimeout.start()
     }
@@ -509,9 +573,11 @@ PlasmoidItem {
         try {
             var result = JSON.parse(stdout)
 
-            // Intraday spot-only response: update SPX price only. GammaFlip
-            // level stays EOD-fixed; recompute the live distance to spot.
+            // Quote-only response (fallback when the chain cache is missing):
+            // price and IV30 only, gamma numbers keep their last values and the
+            // flip/wall distances are re-derived against the new spot.
             if (result.status === "ok" && result.mode === "spot") {
+                root.applyMeta(result)
                 if (result.spot !== null && result.spot !== undefined) {
                     root.spot    = result.spot
                     root.hasData = true
@@ -529,7 +595,7 @@ PlasmoidItem {
                     root.lastSuccessfulUpdate = root.lastUpdate
                     root.status               = "ok"
                 }
-                return   // do NOT touch netGex / regime / flip
+                return   // no chain available -> netGex / regime / flip unchanged
             }
 
             if (result.status === "ok" || result.status === "partial") {
@@ -547,6 +613,7 @@ PlasmoidItem {
                 root.putWallGex       = root.numOrNaN(result.put_wall_gex)
                 root.putWallDistance  = root.numOrNaN(result.put_wall_distance)
 
+                root.applyMeta(result)
                 root.lastUpdate = result.timestamp || ""
                 root.hasData    = !isNaN(root.spot)
                 if (root.hasData) {
@@ -565,6 +632,16 @@ PlasmoidItem {
             root.status       = "error"
             root.errorMessage = i18n("Could not parse fetcher JSON: %1", e)
         }
+    }
+
+    // IV30 and the data-age fields ride along in every response, including the
+    // quote-only one, so they are applied separately from the gamma block.
+    function applyMeta(result) {
+        root.iv30          = root.numOrNaN(result.iv30)
+        root.iv30ChangePct = root.numOrNaN(result.iv30_change_pct)
+        root.dataAgeMin    = root.numOrNaN(result.data_age_min)
+        root.chainAgeHours = root.numOrNaN(result.chain_age_hours)
+        root.dataMode      = result.mode || ""
     }
 
     // JSON nulls (a wall side can be empty) map to NaN, which the "—" texts key off.

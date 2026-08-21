@@ -2,8 +2,8 @@
   "KPlugin": {
     "Id": "com.chrisotm.spxgamma",
     "Name": "SPX Dealer Gamma",
-    "Description": "Shows SPX dealer gamma exposure (GEX), the gamma flip level and the current SPX spot price, using CBOE delayed quotes.",
-    "Version": "0.1.0",
+    "Description": "Shows SPX dealer gamma exposure (GEX), the gamma flip level, put/call walls and IV30, using CBOE delayed quotes.",
+    "Version": "0.2.0",
     "Icon": "office-chart-line",
     "Authors": [
       {
