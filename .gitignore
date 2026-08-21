@@ -4,3 +4,4 @@ __pycache__/
 !docs/*.png
 chain.json
 spx_gex_per_strike.csv
+graphify-out/
