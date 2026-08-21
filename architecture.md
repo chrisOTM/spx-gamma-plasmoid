@@ -16,17 +16,22 @@ main.qml
     JSON.parse → props                    compute_spot_gex() ─► net GEX
                                           gamma_profile()    ─► GEX-vs-spot curve
                                           find_flip_levels() ─► zero crossings
+                                          find_walls()       ─► put / call wall
   compactRepresentation                 emit JSON:
     3 modes (configuration.compactMode)   {spot, net_gex, regime, flip,
   fullRepresentation                       flip_distance, flip_distance_pct,
-    SPX / GEX / regime / flip / Δ          status, errors}
-    + StatusBar.qml
+    SPX / GEX / regime / flip / Δ          call_wall, call_wall_gex,
+    + call wall / put wall                 call_wall_distance, put_wall, …,
+    + StatusBar.qml                        status, errors}
 ```
 
 ## Contract
 
 `fetch_gamma.py` always prints exactly one JSON line and exits 0, even on
-failure (status `"error"`, message in `errors[]`). This mirrors
+failure (status `"error"`, message in `errors[]`). The error payload carries the
+same keys as a successful one, all `null`, so the QML side never sees a missing
+field. Wall strikes are EOD-fixed like the flip level; the `--spot-only`
+response omits them and QML only recomputes their distance to the new spot. This mirrors
 `vix-term-structure-plasmoid` so the QML never has to handle a crash, only a
 status. Stale data stays on screen during refresh/error (`hasData` /
 `lastSuccessfulUpdate`).

@@ -302,7 +302,51 @@ def per_strike_table(df, spot, r, q):
     return agg.sort_values("strike")
 
 
-def make_chart(levels, net, flips, spot, agg, outfile="spx_gamma.png"):
+def find_walls(df, spot, r=0.045, q=0.013):
+    """Put Wall und Call Wall: die Strikes mit der groessten Gamma-Exposure.
+
+    Call Wall = Strike >= Spot mit der groessten Call-Gamma-Exposure,
+    Put Wall  = Strike <= Spot mit der groessten Put-Gamma-Exposure.
+
+    Anders als bei der Netto-GEX wird hier je Seite getrennt und OHNE
+    Dealer-Vorzeichen summiert -- gesucht ist der Betrag der aufgestauten
+    Gamma-Masse, nicht ihre Richtung. Gamma kommt per Black-Scholes am realen
+    Spot (identische Basis wie per_strike_table), damit weit entfernte Strikes
+    von selbst gegen 0 gedaempft werden; ein zusaetzliches Strike-Fenster
+    braucht es deshalb nicht.
+
+    Rueckgabe: dict mit call_wall/put_wall (Strike) und den zugehoerigen
+    Exposures in USD pro 1 % Indexbewegung. Fehlt eine Seite komplett, sind
+    ihre Felder None.
+    """
+    out = {"call_wall": None, "call_wall_gex": None,
+           "put_wall": None, "put_wall_gex": None}
+    if df.empty:
+        return out
+
+    gamma = bs_gamma(spot, df["strike"].values, df["T"].values,
+                     df["iv"].values, r=r, q=q)
+    work = df.copy()
+    work["wall_gex"] = gex_dollar(gamma, work["oi"].values, spot, sign=1)
+
+    def _peak(rows):
+        if rows.empty:
+            return None, None
+        agg = rows.groupby("strike", as_index=False)["wall_gex"].sum()
+        agg = agg[agg["wall_gex"] > 0]
+        if agg.empty:
+            return None, None
+        top = agg.loc[agg["wall_gex"].idxmax()]
+        return float(top["strike"]), float(top["wall_gex"])
+
+    calls = work[(work["type"] == "C") & (work["strike"] >= spot)]
+    puts = work[(work["type"] == "P") & (work["strike"] <= spot)]
+    out["call_wall"], out["call_wall_gex"] = _peak(calls)
+    out["put_wall"], out["put_wall_gex"] = _peak(puts)
+    return out
+
+
+def make_chart(levels, net, flips, spot, agg, walls=None, outfile="spx_gamma.png"):
     try:
         import matplotlib
         matplotlib.use("Agg")
@@ -331,6 +375,14 @@ def make_chart(levels, net, flips, spot, agg, outfile="spx_gamma.png"):
     colors = np.where(near["gex"] >= 0, "tab:green", "tab:red")
     ax2.bar(near["strike"], near["gex"] / 1e9, width=8, color=colors)
     ax2.axvline(spot, color="tab:blue", ls="--", lw=1)
+    if walls:
+        if walls.get("put_wall"):
+            ax2.axvline(walls["put_wall"], color="tab:purple", ls=":", lw=1.4,
+                        label=f"Put Wall {walls['put_wall']:,.0f}")
+        if walls.get("call_wall"):
+            ax2.axvline(walls["call_wall"], color="tab:orange", ls=":", lw=1.4,
+                        label=f"Call Wall {walls['call_wall']:,.0f}")
+        ax2.legend(fontsize=8)
     ax2.axhline(0, color="black", lw=0.8)
     ax2.set_title("Netto-GEX je Strike")
     ax2.set_xlabel("Strike")
@@ -399,6 +451,9 @@ def main():
     # Per-Strike
     agg = per_strike_table(df, spot, r=args.rate, q=args.div)
 
+    # Put/Call Wall
+    walls = find_walls(df, spot, r=args.rate, q=args.div)
+
     # Report
     print("\n" + "=" * 58)
     print(f"  SPX Dealer Gamma Report   ({datetime.now():%Y-%m-%d %H:%M})")
@@ -421,6 +476,16 @@ def main():
                   f"{', '.join(f'{f:,.0f}' for f in flips)}")
     else:
         print("  Gamma Flip Level        : kein Nulldurchgang im Raster gefunden")
+    print("-" * 58)
+    for label, key in (("Call Wall", "call_wall"), ("Put Wall", "put_wall")):
+        strike = walls[key]
+        if strike is None:
+            print(f"  {label:<24}: keine {label.split()[0]}-Strikes gefunden")
+            continue
+        print(f"  {label:<24}: {strike:,.0f}  "
+              f"({walls[key + '_gex']/1e9:.3f} Mrd. $ / 1%)")
+        print(f"  {'Abstand zum Spot':<24}: {strike - spot:+,.0f} "
+              f"({(strike/spot - 1)*100:+.2f} %)")
 
     # groesste Gamma-Strikes
     top = agg.reindex(agg["gex"].abs().sort_values(ascending=False).index).head(8)
@@ -435,7 +500,7 @@ def main():
     print("[OK] Per-Strike-Tabelle: spx_gex_per_strike.csv")
 
     if not args.no_chart:
-        make_chart(levels, net, flips, spot, agg)
+        make_chart(levels, net, flips, spot, agg, walls=walls)
 
 
 if __name__ == "__main__":

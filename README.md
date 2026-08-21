@@ -6,6 +6,8 @@ A small Plasma 6 panel widget that shows, at a glance:
 - **Net dealer gamma exposure (GEX)** in Bn$ per 1% index move, with regime
   (positive = vol-dampening, negative = vol-amplifying)
 - **Gamma flip level** (zero-gamma point) and its distance to spot
+- **Put wall / call wall** — the strikes carrying the largest one-sided
+  gamma exposure below and above spot, with their distance to spot
 
 The gamma math is the engine in `package/contents/code/spx_gamma.py`
 (SqueezeMetrics-style naive GEX, Black-Scholes gamma, zero-crossing flip).
@@ -32,7 +34,7 @@ regime: green = positive (vol-dampening), red = negative (vol-amplifying).
 | spot price tinted by regime, flip distance below | net GEX colored by sign, spot below | ▲ / ▼ glyph for the regime, spot below |
 
 The expanded view shows all numbers: SPX, Net GEX + regime, gamma flip and Δ to
-spot, plus a status bar.
+spot, call wall and put wall, plus a status bar.
 
 ## Dependencies
 
@@ -72,9 +74,10 @@ bash scripts/uninstall.sh
   the only time the ~14 MB option chain is downloaded. Use the refresh button to
   force it.
 - **Intraday SPX price refresh** (default 15 min, US market hours only) — pulls
-  the ~540 byte CBOE index quote and updates the spot price and the distance to
-  the flip level. GEX and the flip level itself stay fixed until the next EOD
-  refresh, because they depend on Open Interest. Expanding the widget triggers
+  the ~540 byte CBOE index quote and updates the spot price and the distances to
+  the flip level and to both walls. GEX, the flip level and the wall strikes
+  themselves stay fixed until the next EOD refresh, because they depend on Open
+  Interest. Expanding the widget triggers
   the same light refresh.
 - **Panel display** (the three compact modes above)
 - **Max days to expiry** (default 90) — caps which option expiries feed the GEX.
@@ -98,6 +101,14 @@ A saved snapshot can be produced with the engine directly:
 The dealer positioning model (long calls / short puts) is an **assumption**, not
 a fact — see the docstring in `spx_gamma.py`. The flip level is the nearest
 zero-crossing of the GEX-vs-spot profile to the current spot.
+
+The walls are computed per side and **without** the dealer sign: what matters is
+the size of the piled-up gamma, not its direction. The call wall is the strike at
+or above spot with the largest summed call gamma exposure, the put wall the
+strike at or below spot with the largest put gamma exposure. Gamma comes from
+Black-Scholes at the real spot, so distant strikes damp towards zero on their own
+and no extra strike window is needed. Both use the same `--max-dte` window as the
+GEX. A side with no eligible strikes reports `null` and shows as `—`.
 
 Time to expiry is measured to the actual settlement instant in US Eastern time —
 09:30 ET for the AM-settled SPX monthlies, 16:00 ET for SPXW and the rest — so

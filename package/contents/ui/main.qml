@@ -12,7 +12,7 @@ PlasmoidItem {
     Plasmoid.title: i18n("SPX Dealer Gamma")
     Plasmoid.icon: "office-chart-line"
     toolTipMainText: Plasmoid.title
-    toolTipSubText: i18n("SPX dealer GEX & gamma flip via CBOE delayed quotes")
+    toolTipSubText: i18n("SPX dealer GEX, gamma flip & put/call walls via CBOE delayed quotes")
 
     // ── State ────────────────────────────────────────────────────────────────
     property real   spot:            NaN
@@ -21,6 +21,14 @@ PlasmoidItem {
     property real   flip:            NaN
     property real   flipDistance:    NaN
     property real   flipDistancePct: NaN
+    // Put/Call Wall: strikes with the largest one-sided gamma exposure.
+    // Strikes are EOD-fixed (OI-driven); only the distances follow spot.
+    property real   callWall:         NaN
+    property real   callWallGex:      NaN     // Bn$ per 1%
+    property real   callWallDistance: NaN
+    property real   putWall:          NaN
+    property real   putWallGex:       NaN
+    property real   putWallDistance:  NaN
 
     property bool   hasData:         false
     property string status:          "loading"
@@ -62,6 +70,15 @@ PlasmoidItem {
         var dp = (root.flipDistancePct >= 0 ? "+" : "") + root.flipDistancePct.toFixed(2)
         return d + " (" + dp + "%)"
     }
+    // "6250 (+85)" — strike plus signed distance to spot.
+    function wallText(strike, distance) {
+        if (!root.hasData || isNaN(strike)) return "—"
+        var s = Math.round(strike).toString()
+        if (isNaN(distance)) return s
+        return s + " (" + (distance >= 0 ? "+" : "") + Math.round(distance) + ")"
+    }
+    readonly property string callWallText: root.wallText(root.callWall, root.callWallDistance)
+    readonly property string putWallText:  root.wallText(root.putWall,  root.putWallDistance)
 
     // ── Compact representation (panel) ──────────────────────────────────────
     compactRepresentation: Item {
@@ -139,9 +156,9 @@ PlasmoidItem {
     // ── Full representation (numbers only) ───────────────────────────────────
     fullRepresentation: Item {
         Layout.minimumWidth:    Kirigami.Units.gridUnit * 14
-        Layout.minimumHeight:   Kirigami.Units.gridUnit * 10
+        Layout.minimumHeight:   Kirigami.Units.gridUnit * 13
         Layout.preferredWidth:  Kirigami.Units.gridUnit * 16
-        Layout.preferredHeight: Kirigami.Units.gridUnit * 12
+        Layout.preferredHeight: Kirigami.Units.gridUnit * 15
 
         ColumnLayout {
             anchors.fill: parent
@@ -253,6 +270,36 @@ PlasmoidItem {
                     horizontalAlignment: Text.AlignRight
                     text: root.flipDeltaText
                     color: Kirigami.Theme.disabledTextColor
+                }
+
+                // Call Wall
+                PlasmaComponents3.Label {
+                    text: i18n("Call Wall")
+                    color: Kirigami.Theme.disabledTextColor
+                }
+                PlasmaComponents3.Label {
+                    Layout.fillWidth: true
+                    horizontalAlignment: Text.AlignRight
+                    text: root.callWallText
+                    font.bold: true
+                    color: root.hasData && !isNaN(root.callWall)
+                        ? Kirigami.Theme.positiveTextColor
+                        : Kirigami.Theme.disabledTextColor
+                }
+
+                // Put Wall
+                PlasmaComponents3.Label {
+                    text: i18n("Put Wall")
+                    color: Kirigami.Theme.disabledTextColor
+                }
+                PlasmaComponents3.Label {
+                    Layout.fillWidth: true
+                    horizontalAlignment: Text.AlignRight
+                    text: root.putWallText
+                    font.bold: true
+                    color: root.hasData && !isNaN(root.putWall)
+                        ? Kirigami.Theme.negativeTextColor
+                        : Kirigami.Theme.disabledTextColor
                 }
             }
 
@@ -472,6 +519,12 @@ PlasmoidItem {
                         root.flipDistance    = root.flip - root.spot
                         root.flipDistancePct = (root.flip / root.spot - 1.0) * 100.0
                     }
+                    if (!isNaN(root.callWall)) {
+                        root.callWallDistance = root.callWall - root.spot
+                    }
+                    if (!isNaN(root.putWall)) {
+                        root.putWallDistance = root.putWall - root.spot
+                    }
                     root.lastUpdate           = result.timestamp || ""
                     root.lastSuccessfulUpdate = root.lastUpdate
                     root.status               = "ok"
@@ -486,6 +539,13 @@ PlasmoidItem {
                 root.flip            = (result.flip !== null && result.flip !== undefined) ? result.flip : NaN
                 root.flipDistance    = (result.flip_distance !== null && result.flip_distance !== undefined) ? result.flip_distance : NaN
                 root.flipDistancePct = (result.flip_distance_pct !== null && result.flip_distance_pct !== undefined) ? result.flip_distance_pct : NaN
+
+                root.callWall         = root.numOrNaN(result.call_wall)
+                root.callWallGex      = root.numOrNaN(result.call_wall_gex)
+                root.callWallDistance = root.numOrNaN(result.call_wall_distance)
+                root.putWall          = root.numOrNaN(result.put_wall)
+                root.putWallGex       = root.numOrNaN(result.put_wall_gex)
+                root.putWallDistance  = root.numOrNaN(result.put_wall_distance)
 
                 root.lastUpdate = result.timestamp || ""
                 root.hasData    = !isNaN(root.spot)
@@ -505,6 +565,11 @@ PlasmoidItem {
             root.status       = "error"
             root.errorMessage = i18n("Could not parse fetcher JSON: %1", e)
         }
+    }
+
+    // JSON nulls (a wall side can be empty) map to NaN, which the "—" texts key off.
+    function numOrNaN(value) {
+        return (value !== null && value !== undefined) ? Number(value) : NaN
     }
 
     function formatErrors(errors) {

@@ -33,6 +33,12 @@ def error_result(message: str) -> dict:
         "flip": None,
         "flip_distance": None,
         "flip_distance_pct": None,
+        "call_wall": None,
+        "call_wall_gex": None,
+        "call_wall_distance": None,
+        "put_wall": None,
+        "put_wall_gex": None,
+        "put_wall_distance": None,
         "errors": [{"message": message}],
     }
 
@@ -48,6 +54,7 @@ try:
         fetch_cboe_quote,
         filter_chain,
         find_flip_levels,
+        find_walls,
         gamma_profile,
         load_chain_from_file,
         parse_chain,
@@ -133,6 +140,8 @@ def main() -> int:
         levels, net = gamma_profile(df, spot, r=args.rate, q=args.div)
         flips = find_flip_levels(levels, net)
         flip_near = min(flips, key=lambda f: abs(f - spot)) if flips else None
+
+        walls = find_walls(df, spot, r=args.rate, q=args.div)
     except Exception as exc:
         emit(error_result(f"Gamma computation failed: {exc}"))
         return 0
@@ -141,6 +150,18 @@ def main() -> int:
     flip_distance = (flip_near - spot) if flip_near is not None else None
     flip_distance_pct = ((flip_near / spot - 1.0) * 100.0
                          if flip_near is not None else None)
+
+    def wall_fields(prefix):
+        """Strike, exposure (Bn$/1%) and distance to spot for one wall side."""
+        strike = walls.get(prefix)
+        if strike is None:
+            return {prefix: None, prefix + "_gex": None, prefix + "_distance": None}
+        gex = walls.get(prefix + "_gex")
+        return {
+            prefix: round(float(strike), 1),
+            prefix + "_gex": round(float(gex) / 1e9, 3) if gex is not None else None,
+            prefix + "_distance": round(float(strike) - float(spot), 1),
+        }
 
     emit({
         "status": "ok",
@@ -152,6 +173,8 @@ def main() -> int:
         "flip": round(float(flip_near), 1) if flip_near is not None else None,
         "flip_distance": round(float(flip_distance), 1) if flip_distance is not None else None,
         "flip_distance_pct": round(float(flip_distance_pct), 2) if flip_distance_pct is not None else None,
+        **wall_fields("call_wall"),
+        **wall_fields("put_wall"),
         "n_options": int(len(df)),
         "errors": [],
     })
