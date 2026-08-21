@@ -41,8 +41,10 @@ def error_result(message: str) -> dict:
 try:
     import numpy as np
     from spx_gamma import (
+        MAX_IV,
         compute_spot_gex,
         fetch_cboe_chain,
+        filter_chain,
         find_flip_levels,
         gamma_profile,
         load_chain_from_file,
@@ -60,6 +62,8 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--spot-only", action="store_true",
                     help="emit only the SPX spot price; skip GEX/flip computation")
     ap.add_argument("--min-oi", type=float, default=0)
+    ap.add_argument("--max-iv", type=float, default=MAX_IV,
+                    help="drop quotes above this implied vol (default: 3.0)")
     ap.add_argument("--rate", type=float, default=0.045)
     ap.add_argument("--div", type=float, default=0.013)
     ap.add_argument("--spot", type=float, default=None)
@@ -105,10 +109,8 @@ def main() -> int:
     # 2) parse + filter
     try:
         df, spot = parse_chain(raw, spot_override=args.spot)
-        df = df[(df["iv"] > 0) & (df["oi"] >= args.min_oi)].copy()
-        if args.max_dte is not None:
-            df = df[df["dte"] <= args.max_dte].copy()
-        df = df[df["dte"] >= 0].copy()
+        df = filter_chain(df, min_oi=args.min_oi, max_dte=args.max_dte,
+                          max_iv=args.max_iv)
         if df.empty:
             emit(error_result("No options left after filtering."))
             return 0

@@ -23,6 +23,12 @@ Methodik (Standard / "naive GEX" nach SqueezeMetrics):
   * Gamma Flip Level: der Indexstand, bei dem die Netto-GEX-Kurve das
     Vorzeichen wechselt. Dazu wird Gamma per Black-Scholes ueber ein Raster
     von Spotpreisen neu berechnet (IV je Strike fix = "sticky strike").
+  * Restlaufzeit T: echte Stunden bis zum Settlement in US-Eastern-Zeit.
+    SPX-Monatsverfall (Root "SPX") ist AM-settled (09:30 ET), SPXW und alles
+    Uebrige PM-settled (16:00 ET). Bereits gesettelte Laufzeiten fallen raus --
+    sonst schleppt der EOD-Snapshot das verfallene 0DTE-Open-Interest mit.
+  * IV wird nach oben gekappt (MAX_IV): abgelaufene/illiquide Zeilen liefern
+    im CBOE-Feed IVs bis ~800 %, die nichts in der Gamma-Summe verloren haben.
 
 Aufruf:
     python spx_gamma.py
@@ -38,7 +44,8 @@ import argparse
 import json
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, time as dtime
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -56,6 +63,18 @@ DEALER_LONG_CALLS = True       # True -> Calls liefern positive Dealer-Gamma
 # Daraus folgende Vorzeichen:
 CALL_SIGN = +1 if DEALER_LONG_CALLS else -1
 PUT_SIGN = -CALL_SIGN          # Puts gegengleich (short Puts = negative Gamma)
+
+# Zeitrechnung: alles in US-Eastern, weil Settlement daran haengt.
+ET = ZoneInfo("America/New_York")
+SECONDS_PER_YEAR = 365.0 * 24.0 * 3600.0
+AM_SETTLED_ROOTS = {"SPX"}     # Monatsverfall, Settlement auf den Opening-Print
+AM_SETTLE = dtime(9, 30)
+PM_SETTLE = dtime(16, 0)
+# Numerischer Boden fuer T (1 Stunde): BS-Gamma divergiert fuer T -> 0, eine
+# einzelne ATM-Zeile kurz vor Settlement wuerde sonst die Summe dominieren.
+MIN_T_YEARS = 1.0 / (365.0 * 24.0)
+# Obergrenze fuer plausible IV (300 %).
+MAX_IV = 3.0
 
 OSI_RE = re.compile(r"^(?P<root>[A-Z\^_]+)(?P<exp>\d{6})(?P<cp>[CP])(?P<strike>\d{8})$")
 
@@ -102,6 +121,9 @@ def parse_chain(raw, spot_override=None):
             "Bitte mit --spot manuell setzen."
         )
 
+    now_et = datetime.now(ET)
+    today_et = now_et.date()
+
     rows = []
     for opt in options:
         sym = opt.get("option", "")
@@ -110,12 +132,20 @@ def parse_chain(raw, spot_override=None):
             continue
         exp = datetime.strptime("20" + m.group("exp"), "%Y%m%d").date()
         strike = int(m.group("strike")) / 1000.0
+        root = m.group("root")
+        settle = AM_SETTLE if root in AM_SETTLED_ROOTS else PM_SETTLE
+        settle_dt = datetime.combine(exp, settle, tzinfo=ET)
         rows.append(
             {
                 "symbol": sym,
+                "root": root,
                 "type": "C" if m.group("cp") == "C" else "P",
                 "strike": strike,
                 "expiry": exp,
+                # Restlaufzeit in Jahren bis zum echten Settlement-Zeitpunkt.
+                # Negativ = bereits gesettelt -> faellt in filter_chain() raus.
+                "T": (settle_dt - now_et).total_seconds() / SECONDS_PER_YEAR,
+                "dte": (exp - today_et).days,
                 "oi": float(opt.get("open_interest", 0) or 0),
                 "iv": float(opt.get("iv", 0) or 0),
                 "gamma": float(opt.get("gamma", 0) or 0),  # CBOE-Gamma (je Aktie)
@@ -126,12 +156,27 @@ def parse_chain(raw, spot_override=None):
     df = pd.DataFrame(rows)
     if df.empty:
         raise ValueError("Optionssymbole konnten nicht geparst werden.")
-
-    today = datetime.now(timezone.utc).date()
-    df["dte"] = (pd.to_datetime(df["expiry"]) - pd.Timestamp(today)).dt.days
-    # Restlaufzeit in Jahren; Boersenschluss 16:00 ET -> grob +0.6 Tag-Anteil
-    df["T"] = (df["dte"].clip(lower=0) + 0.6) / 365.0
     return df, spot
+
+
+def filter_chain(df, min_oi=0.0, max_dte=None, max_iv=MAX_IV):
+    """Gemeinsamer Filter fuer CLI und Widget.
+
+    * wirft bereits gesettelte Laufzeiten raus (T <= 0) -- ohne das schleppt der
+      EOD-Snapshot das am selben Tag verfallene 0DTE-Open-Interest weiter mit;
+    * kappt IV nach oben (Muellquotes bis ~800 % im CBOE-Feed);
+    * setzt danach den numerischen Boden MIN_T_YEARS auf T.
+    """
+    out = df[
+        (df["iv"] > 0)
+        & (df["iv"] <= max_iv)
+        & (df["oi"] >= min_oi)
+        & (df["T"] > 0)
+    ].copy()
+    if max_dte is not None:
+        out = out[out["dte"] <= max_dte].copy()
+    out["T"] = out["T"].clip(lower=MIN_T_YEARS)
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -279,6 +324,8 @@ def main():
                     help="nur Laufzeiten bis X Tage einbeziehen (Default: alle)")
     ap.add_argument("--min-oi", type=float, default=0,
                     help="Mindest-Open-Interest je Option")
+    ap.add_argument("--max-iv", type=float, default=MAX_IV,
+                    help=f"IV-Obergrenze, Default {MAX_IV:g} (= 300 %%)")
     ap.add_argument("--rate", type=float, default=0.045, help="risikofreier Zins")
     ap.add_argument("--div", type=float, default=0.013, help="Dividendenrendite SPX")
     ap.add_argument("--spot", type=float, default=None, help="Spot manuell setzen")
@@ -306,10 +353,8 @@ def main():
     df, spot = parse_chain(raw, spot_override=args.spot)
 
     # Filter
-    df = df[(df["iv"] > 0) & (df["oi"] >= args.min_oi)].copy()
-    if args.max_dte is not None:
-        df = df[df["dte"] <= args.max_dte].copy()
-    df = df[df["dte"] >= 0].copy()
+    df = filter_chain(df, min_oi=args.min_oi, max_dte=args.max_dte,
+                      max_iv=args.max_iv)
     if df.empty:
         sys.exit("Nach Filterung keine Optionen uebrig.")
 
